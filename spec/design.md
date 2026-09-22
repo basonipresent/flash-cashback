@@ -1,6 +1,6 @@
 # Technical Design — Flash Cashback
 
-Status: implemented (`backend/internal/cashback`, `backend/internal/httpapi`, `backend/migrations`). `spec/api.yaml` still only documents `/healthz`/`/readyz` and hasn't been synced to the endpoints in §4 yet.
+Status: implemented and synced - backend (`backend/internal/cashback`, `backend/internal/httpapi`, `backend/migrations`), `spec/api.yaml` (all endpoints below), and the mobile app (`mobile/src/screens/Dashboard.tsx`).
 Related: [requirements.md](./requirements.md) · [decisions.md](./decisions.md) · [invariants.md](./invariants.md) · [api.yaml](./api.yaml) · [risks.md](./risks.md)
 
 This document answers *how* the requirements in [requirements.md](./requirements.md) get built. It makes technical decisions (schema shape, concurrency control, tool choices). It deliberately does **not** make product/business decisions (e.g. the minimum redemption amount) — those belong in [decisions.md](./decisions.md) and are called out below as open items where this design depends on them.
@@ -139,9 +139,9 @@ Because the budget row is locked first on every award, it is a single global ser
 
 ---
 
-## 4. API surface (proposed — not yet in `spec/api.yaml`)
+## 4. API surface
 
-`spec/api.yaml` today only documents `/healthz` and `/readyz` (the scaffold). Once the open items below are resolved in `decisions.md`, it should be extended with:
+Implemented and fully documented in `spec/api.yaml`:
 
 | Method & path | FRs | Notes |
 |---|---|---|
@@ -149,10 +149,12 @@ Because the budget row is locked first on every award, it is a single global ser
 | `GET /cashback/balance` | FR-10 | Identifies the caller via `X-User-Id`. |
 | `GET /cashback/daily` | FR-11 | Today's (WIB) earned total and remaining allowance for the calling user. |
 | `GET /cashback/history` | FR-12 | Paginated, newest-first. Not a raw `ledger` dump: unions `ledger` entries (`AWARD` with `amount > 0`, and `REDEEM`, left-joined to `payments` for `reason_code`) with zero-award `payments` rows (`BELOW_MINIMUM`/`DAILY_CAP_REACHED`/`CAMPAIGN_ENDED`), which never get a `ledger` row at all since `AwardPayment` only writes one when `awarded > 0`. Without this, FR-12's "including the reason for each payment outcome" wouldn't hold for zero-award payments - they'd simply be invisible. |
-| `GET /campaign` | FR-13 | `{ status: "active" \| "ended" }`. Whether remaining budget is exposed publicly is an open item below. |
+| `GET /campaign` | FR-13 | `{ status: "active" \| "ended" }`. Doesn't expose the remaining budget (decisions.md "GET /campaign budget visibility"). |
 | `POST /cashback/redemptions` | FR-14–18 | Header: `Idempotency-Key`. Body: `{ amount }`. Must reference a real `users.id` (400 if not). Response: `{ redemption_id, new_balance }`. |
 
 All endpoints identifying a user use `X-User-Id`, consistent with the brief's "assume the user is known; identity passed in a header" (requirements.md §4) - it's now a real `users.id` UUID (seeded via SQL, `scripts/seed_users.sql`), not an arbitrary caller-chosen string, though nothing verifies the caller *is* that user (still no auth).
+
+The API allows any origin (`Access-Control-Allow-Origin: *`, `internal/httpapi/httpapi.go`'s `withCORS`) so the mobile app's web target (a different origin/port during local development) can call it directly from a browser. Doesn't widen the trust boundary - there's no auth or cookie-based session to protect, `X-User-Id` is already an untrusted, caller-supplied header regardless of origin.
 
 ---
 
@@ -169,13 +171,13 @@ Nothing in the correctness story depends on Redis; it can be introduced or left 
 
 ## 6. Migrations
 
-Recommend [golang-migrate](https://github.com/golang-migrate/migrate): plain versioned `.up.sql`/`.down.sql` files in `backend/migrations/`, a well-known CLI, and a Go library that plugs into `pgx` if programmatic migration-on-boot is ever wanted. This is a tooling choice, not a product decision, so it's stated here rather than deferred to `decisions.md` — but no migration files have been written and `make migrate` is still a stub (see [Makefile](../Makefile)).
+[golang-migrate](https://github.com/golang-migrate/migrate): a single versioned `0001_init.{up,down}.sql` in `backend/migrations/` (embedded into the binary via `go:embed`, see `backend/migrations/embed.go`). Runs automatically on every backend boot (`internal/migrate.Up`, called from `cmd/api/main.go` right after the Postgres ping succeeds) - `make up` alone stands up a fully working schema, no separate migrate step needed (NFR-06). Safe under concurrent replicas: golang-migrate holds a Postgres advisory lock for the duration of the run. `make migrate` still exists for a manual/CI re-run (`docker compose exec backend /app/api -migrate`, reusing the same `-healthcheck`-style flag pattern already in `main.go`).
 
 ---
 
 ## 7. Open items for `spec/decisions.md`
 
-All resolved — see `decisions.md`: minimum redemption amount (1,000 IDR), campaign time window (none), redemption idempotency-key conflict (reject with 409), `paid_at` bounds (reject future only), tie-break reason code (budget wins), and `GET /campaign` budget visibility (status only, no amount).
+All resolved — see `decisions.md`: minimum redemption amount (1,000 IDR), campaign time window (none), redemption idempotency-key conflict (reject with 409), `paid_at` bounds (reject future only), payment ingestion transport (synchronous HTTP), tie-break reason code (budget wins), `GET /campaign` budget visibility (status only, no amount), and user identity (real `users` table, seeded via SQL, no API).
 
 ---
 

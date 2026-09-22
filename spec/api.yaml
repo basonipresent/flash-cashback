@@ -48,10 +48,11 @@ paths:
       description: >
         System-to-system call from whatever emits payment-succeeded events
         (decisions.md "Payment ingestion transport") - user_id comes from
-        the body, not X-User-Id, and must reference a real user (POST
-        /users). Idempotent on payment_id (FR-08): a retry returns the
-        original result unchanged, including for a payment already fully
-        processed by a concurrent request.
+        the body, not X-User-Id, and must reference a real user (seeded via
+        SQL - see scripts/seed_users.sql, not created through this API).
+        Idempotent on payment_id (FR-08): a retry returns the original
+        result unchanged, including for a payment already fully processed
+        by a concurrent request.
       operationId: postPayment
       requestBody:
         required: true

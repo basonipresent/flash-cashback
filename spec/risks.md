@@ -1,6 +1,6 @@
 # Risks
 
-Status: proposed, not yet implemented.
+Status: implemented - mitigations described as resolved below are live in code, not just planned.
 Related: [requirements.md](./requirements.md) · [design.md](./design.md) · [invariants.md](./invariants.md) · [decisions.md](./decisions.md)
 
 Known risks to this system, what mitigates each, and which are deliberately accepted or deferred rather than solved.

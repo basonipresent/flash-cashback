@@ -1,6 +1,6 @@
 # Invariants
 
-Status: proposed, not yet implemented.
+Status: implemented. The concurrency-sensitive ones (INV-01, INV-04–07, INV-11–14) are directly asserted under real concurrent load in `backend/internal/cashback/integration_test.go` (`make test-integration`); the award-correctness ones (INV-08–10) are covered by `award_test.go`'s `TestComputeAward`. INV-02/INV-03 aren't independently re-asserted - they're upheld by construction (the same-transaction discipline in design.md §3), not something a test computes and compares separately.
 Related: [requirements.md](./requirements.md) · [design.md](./design.md) · [decisions.md](./decisions.md)
 
 Correctness properties the system must hold **at every point a transaction commits**, including under concurrent payments and concurrent redemptions (NFR-03) — not just "eventually consistent." Each is derived from a specific FR/NFR, and [design.md](./design.md) §3 describes the locking scheme intended to guarantee them. These are the properties tests should assert, especially under concurrency (e.g. many goroutines hammering the same user or the same campaign at once).

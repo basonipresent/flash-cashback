@@ -11,7 +11,7 @@ See [spec/requirements.md](spec/requirements.md) for the full brief.
 
 ## Spec
 
-- [spec/presentation.md](spec/presentation.md) — **start here**: overview, trade-offs, and the reasoning behind the current approach.
+- [presentation.md](presentation.md) — **start here**: overview, trade-offs, and the reasoning behind the current approach.
 - [spec/requirements.md](spec/requirements.md) — the brief and derived functional/non-functional requirements.
 - [spec/design.md](spec/design.md) — technical design: architecture, data model, concurrency approach, API surface.
 - [spec/decisions.md](spec/decisions.md) — resolutions to open questions in the brief, with reasoning.
@@ -30,11 +30,13 @@ See [spec/requirements.md](spec/requirements.md) for the full brief.
 ```sh
 cp .env.example .env
 make up       # builds and starts postgres, redis, backend
+make seed     # creates two demo users (alice, bob) with sample payment/redemption history
 make mobile   # installs mobile deps and starts the Expo dev server
 ```
 
 Then set `mobile/.env` (see `mobile/.env.example`) to your laptop's LAN IP
-so a physical phone can reach the backend.
+so a physical phone can reach the backend, and enter one of the seeded user
+ids (printed by `make seed`) on the app's first screen.
 
 ## Make targets
 
@@ -44,10 +46,10 @@ Run `make` (or `make help`) to list all targets with descriptions.
 
 ```
 flash-cashback/
-├── spec/           # presentation, requirements, design, decisions, invariants, API contract, risks
-├── backend/        # Go API (cmd/api, internal/config, internal/httpapi, migrations)
+├── spec/           # requirements, design, decisions, invariants, API contract, risks
+├── backend/        # Go API (cmd/api, internal/cashback, internal/httpapi, migrations)
 ├── mobile/         # Expo (React Native, TypeScript) app
-├── scripts/        # demo/load scripts (not yet implemented)
+├── scripts/        # demo seed data + manual API test scripts
 ├── docker-compose.yml
 ├── Makefile
 └── .env.example
@@ -55,7 +57,6 @@ flash-cashback/
 
 ## Status
 
-Backend implemented: cashback earning (daily cap + campaign budget,
-concurrency-safe), redemption, ledger, and all API endpoints — see
-[spec/presentation.md](spec/presentation.md) for what's built and verified.
-Mobile is still just the scaffold's connectivity check.
+Backend and mobile app both implemented: cashback earning (daily cap +
+campaign budget, concurrency-safe), redemption, ledger, all API endpoints,
+and a mobile UI (balance/daily-usage/campaign status, redeem, history).
