@@ -1,0 +1,19 @@
+# Env
+.env
+*.env
+!*.env.example
+
+# Go
+/backend/bin/
+/backend/tmp/
+
+# Node / Expo
+node_modules/
+.expo/
+dist/
+web-build/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
