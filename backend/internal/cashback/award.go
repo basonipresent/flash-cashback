@@ -101,6 +101,9 @@ func AwardPayment(ctx context.Context, db *pgxpool.Pool, in PaymentInput) (Award
 		}
 		return result, nil
 	}
+	if isForeignKeyViolation(err) {
+		return AwardResult{}, ErrUserNotFound
+	}
 	if err != nil {
 		return AwardResult{}, fmt.Errorf("cashback: claim payment: %w", err)
 	}

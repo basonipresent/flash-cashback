@@ -1,6 +1,10 @@
 package cashback
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/jackc/pgx/v5/pgconn"
+)
 
 var (
 	// ErrBelowMinimumRedemption: amount is under MinRedemptionIDR (FR-14).
@@ -17,4 +21,17 @@ var (
 	// ErrFuturePaymentTimestamp: paid_at is further in the future than
 	// MaxFutureClockSkew tolerates (decisions.md "paid_at bounds").
 	ErrFuturePaymentTimestamp = errors.New("cashback: paid_at cannot be in the future")
+
+	// ErrUserNotFound: user_id doesn't reference an existing users row
+	// (decisions.md "User identity").
+	ErrUserNotFound = errors.New("cashback: user not found")
 )
+
+// foreignKeyViolationCode is Postgres's SQLSTATE for a foreign key
+// violation (23503).
+const foreignKeyViolationCode = "23503"
+
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == foreignKeyViolationCode
+}

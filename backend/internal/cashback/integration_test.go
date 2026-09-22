@@ -41,10 +41,12 @@ func testDB(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(db.Close)
 
-	// Isolate this test from any other: truncate everything and reseed the
-	// singleton campaign_budget row exactly as the initial migration does.
+	// Isolate this test from any other: truncate everything (including
+	// users - all the FK columns reference it, so it has to be truncated
+	// in the same statement) and reseed the singleton campaign_budget row
+	// exactly as the initial migration does.
 	_, err = db.Exec(ctx, `
-		TRUNCATE payments, campaign_budget, user_daily_cashback, ledger, user_balance, redemptions;
+		TRUNCATE payments, campaign_budget, user_daily_cashback, ledger, user_balance, redemptions, users;
 		INSERT INTO campaign_budget (id, total_budget_idr, awarded_total_idr) VALUES (1, 10000000, 0);
 	`)
 	if err != nil {
@@ -52,6 +54,20 @@ func testDB(t *testing.T) *pgxpool.Pool {
 	}
 
 	return db
+}
+
+// createTestUser inserts a users row directly via SQL and returns its UUID.
+// Every user_id column is FK-constrained to users(id) (decisions.md "User
+// identity"), so tests can't just make up a string anymore - and there's no
+// API/package to go through either, since users are meant to be populated
+// by a SQL script, not application code.
+func createTestUser(t *testing.T, ctx context.Context, db *pgxpool.Pool, name string) string {
+	t.Helper()
+	id := uuid.New().String()
+	if _, err := db.Exec(ctx, `INSERT INTO users (id, name) VALUES ($1::uuid, $2)`, id, name); err != nil {
+		t.Fatalf("createTestUser(%q): %v", name, err)
+	}
+	return id
 }
 
 // TestConcurrentPayments_DailyCap is INV-06: many concurrent payments for
@@ -62,10 +78,10 @@ func TestConcurrentPayments_DailyCap(t *testing.T) {
 	ctx := context.Background()
 
 	const (
-		userID       = "user-daily-cap"
 		numPayments  = 20
 		amountPerPay = 100_000 // base cashback 5,000 each; 20 * 5,000 = 100,000 requested vs 50,000 cap
 	)
+	userID := createTestUser(t, ctx, db, "user-daily-cap")
 	paidAt := time.Now()
 
 	var wg sync.WaitGroup
@@ -116,6 +132,12 @@ func TestConcurrentPayments_CampaignBudget(t *testing.T) {
 	)
 	paidAt := time.Now()
 
+	// Distinct users so the daily cap never binds first.
+	userIDs := make([]string, numPayments)
+	for i := 0; i < numPayments; i++ {
+		userIDs[i] = createTestUser(t, ctx, db, fmt.Sprintf("user-budget-%d", i))
+	}
+
 	var wg sync.WaitGroup
 	for i := 0; i < numPayments; i++ {
 		wg.Add(1)
@@ -123,7 +145,7 @@ func TestConcurrentPayments_CampaignBudget(t *testing.T) {
 			defer wg.Done()
 			_, err := AwardPayment(ctx, db, PaymentInput{
 				PaymentID: fmt.Sprintf("budget-%d", i),
-				UserID:    fmt.Sprintf("user-budget-%d", i), // distinct users so the daily cap never binds first
+				UserID:    userIDs[i],
 				AmountIDR: amountPerPay,
 				PaidAt:    paidAt,
 			})
@@ -169,10 +191,10 @@ func TestConcurrentPayments_SameIDIdempotent(t *testing.T) {
 	ctx := context.Background()
 
 	const (
-		userID    = "user-idempotent"
 		paymentID = "duplicate-payment"
 		amount    = 100_000
 	)
+	userID := createTestUser(t, ctx, db, "user-idempotent")
 	paidAt := time.Now()
 
 	const numAttempts = 10
@@ -221,7 +243,7 @@ func TestConcurrentRedemptions_SameKeyIdempotent(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
 
-	const userID = "user-redeem-idempotent"
+	userID := createTestUser(t, ctx, db, "user-redeem-idempotent")
 	seedBalance(t, ctx, db, userID, 100_000)
 
 	key := uuid.New().String()
@@ -273,7 +295,7 @@ func TestRedeem_IdempotencyKeyConflict(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
 
-	const userID = "user-key-conflict"
+	userID := createTestUser(t, ctx, db, "user-key-conflict")
 	seedBalance(t, ctx, db, userID, 100_000)
 
 	key := uuid.New().String()
@@ -303,7 +325,7 @@ func TestRedeem_InsufficientBalanceRejectedWithoutMutation(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
 
-	const userID = "user-insufficient"
+	userID := createTestUser(t, ctx, db, "user-insufficient")
 	seedBalance(t, ctx, db, userID, 5_000)
 
 	_, err := Redeem(ctx, db, RedemptionInput{
@@ -330,7 +352,7 @@ func TestRedeem_BelowMinimumRejected(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
 
-	const userID = "user-below-min"
+	userID := createTestUser(t, ctx, db, "user-below-min")
 	seedBalance(t, ctx, db, userID, 100_000)
 
 	_, err := Redeem(ctx, db, RedemptionInput{
@@ -349,7 +371,7 @@ func TestRedeem_AvailableAfterCampaignEnded(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
 
-	const userID = "user-post-campaign"
+	userID := createTestUser(t, ctx, db, "user-post-campaign")
 	seedBalance(t, ctx, db, userID, 50_000)
 
 	// Exhaust the campaign budget directly.
@@ -375,6 +397,39 @@ func TestRedeem_AvailableAfterCampaignEnded(t *testing.T) {
 	}
 	if result.NewBalanceIDR != 40_000 {
 		t.Errorf("balance after redemption = %d, want 40,000", result.NewBalanceIDR)
+	}
+}
+
+// TestAwardPayment_UnknownUserRejected covers decisions.md "User identity":
+// a payment for a user_id that doesn't reference a real users row is
+// rejected via the FK constraint, not silently accepted.
+func TestAwardPayment_UnknownUserRejected(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	_, err := AwardPayment(ctx, db, PaymentInput{
+		PaymentID: "pay-unknown-user",
+		UserID:    uuid.New().String(), // never created
+		AmountIDR: 100_000,
+		PaidAt:    time.Now(),
+	})
+	if err != ErrUserNotFound {
+		t.Fatalf("AwardPayment: got err %v, want ErrUserNotFound", err)
+	}
+}
+
+// TestRedeem_UnknownUserRejected is the same, for redemptions.
+func TestRedeem_UnknownUserRejected(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	_, err := Redeem(ctx, db, RedemptionInput{
+		UserID:         uuid.New().String(), // never created
+		AmountIDR:      10_000,
+		IdempotencyKey: uuid.New().String(),
+	})
+	if err != ErrUserNotFound {
+		t.Fatalf("Redeem: got err %v, want ErrUserNotFound", err)
 	}
 }
 

@@ -36,7 +36,7 @@ func NewRouter(db *pgxpool.Pool, rdb *redis.Client) http.Handler {
 
 	mux.HandleFunc("GET /campaign", deps.handleGetCampaign)
 
-	return withLogging(mux)
+	return withLogging(withCORS(mux))
 }
 
 // handleHealthz is a liveness check: 200 whenever the process is up.
@@ -93,6 +93,26 @@ func requireUserID(w http.ResponseWriter, r *http.Request) (string, bool) {
 		return "", false
 	}
 	return userID, true
+}
+
+// withCORS allows any browser origin to call the API. There's no auth in
+// this MVP (X-User-Id is a plain, untrusted header - see requireUserID
+// above), so a wildcard origin doesn't widen the trust boundary any further
+// than it already is; this exists so the mobile app's web target (a
+// different origin/port) can reach the API during local development.
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-User-Id, Idempotency-Key")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func withLogging(next http.Handler) http.Handler {

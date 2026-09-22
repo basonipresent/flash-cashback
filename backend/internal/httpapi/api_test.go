@@ -12,18 +12,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/basonipresent/flash-cashback/backend/internal/migrate"
 )
 
-// newTestRouter builds a real router against Postgres. Requires
-// TEST_DATABASE_URL (falls back to DATABASE_URL); skips (not fails) if
-// neither is set, so `make test` never needs a DB. Redis is wired up but
-// never exercised by these tests (only /readyz touches it), so it doesn't
-// need to be reachable.
-func newTestRouter(t *testing.T) http.Handler {
+// testDSN resolves the test database URL (TEST_DATABASE_URL, falling back
+// to DATABASE_URL). Skips (not fails) if neither is set, so `make test`
+// never needs a DB.
+func testDSN(t *testing.T) string {
 	t.Helper()
 
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -33,6 +32,16 @@ func newTestRouter(t *testing.T) http.Handler {
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL (or DATABASE_URL) not set, skipping HTTP integration test")
 	}
+	return dsn
+}
+
+// newTestRouter builds a real router against Postgres. Redis is wired up
+// but never exercised by these tests (only /readyz touches it), so it
+// doesn't need to be reachable.
+func newTestRouter(t *testing.T) http.Handler {
+	t.Helper()
+
+	dsn := testDSN(t)
 
 	if err := migrate.Up(dsn); err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -46,7 +55,7 @@ func newTestRouter(t *testing.T) http.Handler {
 	t.Cleanup(db.Close)
 
 	_, err = db.Exec(ctx, `
-		TRUNCATE payments, campaign_budget, user_daily_cashback, ledger, user_balance, redemptions;
+		TRUNCATE payments, campaign_budget, user_daily_cashback, ledger, user_balance, redemptions, users;
 		INSERT INTO campaign_budget (id, total_budget_idr, awarded_total_idr) VALUES (1, 10000000, 0);
 	`)
 	if err != nil {
@@ -104,13 +113,35 @@ func doRequest(t *testing.T, handler http.Handler, method, path string, headers 
 	return rec
 }
 
+// createTestUser inserts a users row directly via SQL and returns its
+// UUID. Every user_id is FK-constrained to users(id) (decisions.md "User
+// identity"), so tests can't just make up a string - and there's no
+// API/package to go through either, since users are meant to be populated
+// by a SQL script, not application code.
+func createTestUser(t *testing.T, name string) string {
+	t.Helper()
+
+	db, err := pgxpool.New(context.Background(), testDSN(t))
+	if err != nil {
+		t.Fatalf("createTestUser: connect: %v", err)
+	}
+	defer db.Close()
+
+	id := uuid.New().String()
+	if _, err := db.Exec(context.Background(), `INSERT INTO users (id, name) VALUES ($1::uuid, $2)`, id, name); err != nil {
+		t.Fatalf("createTestUser(%q): %v", name, err)
+	}
+	return id
+}
+
 func TestPostPayment_HappyPath(t *testing.T) {
 	router := newTestRouter(t)
+	alice := createTestUser(t, "alice")
 
 	var resp postPaymentResponse
 	rec := doRequest(t, router, http.MethodPost, "/payments", nil, postPaymentRequest{
 		PaymentID: "pay-http-1",
-		UserID:    "alice",
+		UserID:    alice,
 		AmountIDR: 100_000, // base cashback 5,000
 		PaidAt:    time.Now().Format(time.RFC3339),
 	}, &resp)
@@ -125,10 +156,11 @@ func TestPostPayment_HappyPath(t *testing.T) {
 
 func TestPostPayment_IdempotentRetry(t *testing.T) {
 	router := newTestRouter(t)
+	alice := createTestUser(t, "alice")
 
 	req := postPaymentRequest{
 		PaymentID: "pay-http-retry",
-		UserID:    "alice",
+		UserID:    alice,
 		AmountIDR: 100_000,
 		PaidAt:    time.Now().Format(time.RFC3339),
 	}
@@ -147,17 +179,18 @@ func TestPostPayment_IdempotentRetry(t *testing.T) {
 
 func TestPostPayment_Validation(t *testing.T) {
 	router := newTestRouter(t)
+	alice := createTestUser(t, "alice")
 
 	tests := []struct {
 		name string
 		body postPaymentRequest
 	}{
-		{"missing payment_id", postPaymentRequest{UserID: "alice", AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339)}},
+		{"missing payment_id", postPaymentRequest{UserID: alice, AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339)}},
 		{"missing user_id", postPaymentRequest{PaymentID: "p1", AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339)}},
-		{"zero amount", postPaymentRequest{PaymentID: "p2", UserID: "alice", AmountIDR: 0, PaidAt: time.Now().Format(time.RFC3339)}},
-		{"negative amount", postPaymentRequest{PaymentID: "p3", UserID: "alice", AmountIDR: -1, PaidAt: time.Now().Format(time.RFC3339)}},
-		{"unparseable paid_at", postPaymentRequest{PaymentID: "p4", UserID: "alice", AmountIDR: 100_000, PaidAt: "not-a-date"}},
-		{"paid_at too far in the future", postPaymentRequest{PaymentID: "p5", UserID: "alice", AmountIDR: 100_000, PaidAt: time.Now().Add(time.Hour).Format(time.RFC3339)}},
+		{"zero amount", postPaymentRequest{PaymentID: "p2", UserID: alice, AmountIDR: 0, PaidAt: time.Now().Format(time.RFC3339)}},
+		{"negative amount", postPaymentRequest{PaymentID: "p3", UserID: alice, AmountIDR: -1, PaidAt: time.Now().Format(time.RFC3339)}},
+		{"unparseable paid_at", postPaymentRequest{PaymentID: "p4", UserID: alice, AmountIDR: 100_000, PaidAt: "not-a-date"}},
+		{"paid_at too far in the future", postPaymentRequest{PaymentID: "p5", UserID: alice, AmountIDR: 100_000, PaidAt: time.Now().Add(time.Hour).Format(time.RFC3339)}},
 	}
 
 	for _, tt := range tests {
@@ -172,11 +205,12 @@ func TestPostPayment_Validation(t *testing.T) {
 
 func TestPostPayment_NearFutureWithinClockSkewToleranceAccepted(t *testing.T) {
 	router := newTestRouter(t)
+	alice := createTestUser(t, "alice")
 
 	var resp postPaymentResponse
 	rec := doRequest(t, router, http.MethodPost, "/payments", nil, postPaymentRequest{
 		PaymentID: "pay-near-future",
-		UserID:    "alice",
+		UserID:    alice,
 		AmountIDR: 100_000,
 		PaidAt:    time.Now().Add(2 * time.Minute).Format(time.RFC3339), // within cashback.MaxFutureClockSkew (5m)
 	}, &resp)
@@ -212,13 +246,14 @@ func TestGetBalance_RequiresUserID(t *testing.T) {
 
 func TestGetBalance_AfterPayment(t *testing.T) {
 	router := newTestRouter(t)
+	bob := createTestUser(t, "bob")
 
 	doRequest(t, router, http.MethodPost, "/payments", nil, postPaymentRequest{
-		PaymentID: "pay-balance", UserID: "bob", AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339),
+		PaymentID: "pay-balance", UserID: bob, AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339),
 	}, nil)
 
 	var balance map[string]int64
-	rec := doRequest(t, router, http.MethodGet, "/cashback/balance", map[string]string{"X-User-Id": "bob"}, nil, &balance)
+	rec := doRequest(t, router, http.MethodGet, "/cashback/balance", map[string]string{"X-User-Id": bob}, nil, &balance)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -230,13 +265,14 @@ func TestGetBalance_AfterPayment(t *testing.T) {
 
 func TestGetDaily_AfterPayment(t *testing.T) {
 	router := newTestRouter(t)
+	carol := createTestUser(t, "carol")
 
 	doRequest(t, router, http.MethodPost, "/payments", nil, postPaymentRequest{
-		PaymentID: "pay-daily", UserID: "carol", AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339),
+		PaymentID: "pay-daily", UserID: carol, AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339),
 	}, nil)
 
 	var daily map[string]int64
-	rec := doRequest(t, router, http.MethodGet, "/cashback/daily", map[string]string{"X-User-Id": "carol"}, nil, &daily)
+	rec := doRequest(t, router, http.MethodGet, "/cashback/daily", map[string]string{"X-User-Id": carol}, nil, &daily)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -248,13 +284,14 @@ func TestGetDaily_AfterPayment(t *testing.T) {
 
 func TestGetHistory_AfterPayment(t *testing.T) {
 	router := newTestRouter(t)
+	dave := createTestUser(t, "dave")
 
 	doRequest(t, router, http.MethodPost, "/payments", nil, postPaymentRequest{
-		PaymentID: "pay-history", UserID: "dave", AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339),
+		PaymentID: "pay-history", UserID: dave, AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339),
 	}, nil)
 
 	var entries []historyEntryResponse
-	rec := doRequest(t, router, http.MethodGet, "/cashback/history", map[string]string{"X-User-Id": "dave"}, nil, &entries)
+	rec := doRequest(t, router, http.MethodGet, "/cashback/history", map[string]string{"X-User-Id": dave}, nil, &entries)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -271,13 +308,14 @@ func TestGetHistory_AfterPayment(t *testing.T) {
 // only writes one when awarded > 0).
 func TestGetHistory_IncludesZeroAwardPayments(t *testing.T) {
 	router := newTestRouter(t)
+	hank := createTestUser(t, "hank")
 
 	doRequest(t, router, http.MethodPost, "/payments", nil, postPaymentRequest{
-		PaymentID: "pay-below-min", UserID: "hank", AmountIDR: 10_000, PaidAt: time.Now().Format(time.RFC3339),
+		PaymentID: "pay-below-min", UserID: hank, AmountIDR: 10_000, PaidAt: time.Now().Format(time.RFC3339),
 	}, nil)
 
 	var entries []historyEntryResponse
-	rec := doRequest(t, router, http.MethodGet, "/cashback/history", map[string]string{"X-User-Id": "hank"}, nil, &entries)
+	rec := doRequest(t, router, http.MethodGet, "/cashback/history", map[string]string{"X-User-Id": hank}, nil, &entries)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -290,14 +328,15 @@ func TestGetHistory_IncludesZeroAwardPayments(t *testing.T) {
 
 func TestPostRedemption_HappyPath(t *testing.T) {
 	router := newTestRouter(t)
+	erin := createTestUser(t, "erin")
 
 	doRequest(t, router, http.MethodPost, "/payments", nil, postPaymentRequest{
-		PaymentID: "pay-redeem", UserID: "erin", AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339),
+		PaymentID: "pay-redeem", UserID: erin, AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339),
 	}, nil)
 
 	var resp postRedemptionResponse
 	rec := doRequest(t, router, http.MethodPost, "/cashback/redemptions",
-		map[string]string{"X-User-Id": "erin", "Idempotency-Key": "redeem-http-1"},
+		map[string]string{"X-User-Id": erin, "Idempotency-Key": "redeem-http-1"},
 		postRedemptionRequest{AmountIDR: 2_000}, &resp)
 
 	if rec.Code != http.StatusOK {
@@ -310,12 +349,13 @@ func TestPostRedemption_HappyPath(t *testing.T) {
 
 func TestPostRedemption_IdempotencyKeyConflict(t *testing.T) {
 	router := newTestRouter(t)
+	grant := createTestUser(t, "grant")
 
 	doRequest(t, router, http.MethodPost, "/payments", nil, postPaymentRequest{
-		PaymentID: "pay-redeem-conflict", UserID: "grant", AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339),
+		PaymentID: "pay-redeem-conflict", UserID: grant, AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339),
 	}, nil)
 
-	headers := map[string]string{"X-User-Id": "grant", "Idempotency-Key": "redeem-http-conflict"}
+	headers := map[string]string{"X-User-Id": grant, "Idempotency-Key": "redeem-http-conflict"}
 
 	rec := doRequest(t, router, http.MethodPost, "/cashback/redemptions", headers, postRedemptionRequest{AmountIDR: 2_000}, nil)
 	if rec.Code != http.StatusOK {
@@ -328,7 +368,7 @@ func TestPostRedemption_IdempotencyKeyConflict(t *testing.T) {
 	}
 
 	var balance map[string]int64
-	doRequest(t, router, http.MethodGet, "/cashback/balance", map[string]string{"X-User-Id": "grant"}, nil, &balance)
+	doRequest(t, router, http.MethodGet, "/cashback/balance", map[string]string{"X-User-Id": grant}, nil, &balance)
 	if balance["balance"] != 3_000 {
 		t.Errorf("balance = %d, want 3000 (only the first redemption should have applied)", balance["balance"])
 	}
@@ -336,12 +376,13 @@ func TestPostRedemption_IdempotencyKeyConflict(t *testing.T) {
 
 func TestPostRedemption_IdempotentRetry(t *testing.T) {
 	router := newTestRouter(t)
+	frank := createTestUser(t, "frank")
 
 	doRequest(t, router, http.MethodPost, "/payments", nil, postPaymentRequest{
-		PaymentID: "pay-redeem-retry", UserID: "frank", AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339),
+		PaymentID: "pay-redeem-retry", UserID: frank, AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339),
 	}, nil)
 
-	headers := map[string]string{"X-User-Id": "frank", "Idempotency-Key": "redeem-http-retry"}
+	headers := map[string]string{"X-User-Id": frank, "Idempotency-Key": "redeem-http-retry"}
 	body := postRedemptionRequest{AmountIDR: 2_000}
 
 	var first, second postRedemptionResponse
@@ -356,7 +397,7 @@ func TestPostRedemption_IdempotentRetry(t *testing.T) {
 	}
 
 	var balance map[string]int64
-	doRequest(t, router, http.MethodGet, "/cashback/balance", map[string]string{"X-User-Id": "frank"}, nil, &balance)
+	doRequest(t, router, http.MethodGet, "/cashback/balance", map[string]string{"X-User-Id": frank}, nil, &balance)
 	if balance["balance"] != 3_000 {
 		t.Errorf("balance = %d, want 3000 (redeemed once, not twice)", balance["balance"])
 	}
@@ -364,11 +405,12 @@ func TestPostRedemption_IdempotentRetry(t *testing.T) {
 
 func TestPostRedemption_Validation(t *testing.T) {
 	router := newTestRouter(t)
+	grace := createTestUser(t, "grace")
 
 	// A payment first, so "insufficient balance" is tested against a real,
 	// known-too-small balance rather than an absent user.
 	doRequest(t, router, http.MethodPost, "/payments", nil, postPaymentRequest{
-		PaymentID: "pay-redeem-validation", UserID: "grace", AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339),
+		PaymentID: "pay-redeem-validation", UserID: grace, AmountIDR: 100_000, PaidAt: time.Now().Format(time.RFC3339),
 	}, nil)
 
 	tests := []struct {
@@ -377,10 +419,10 @@ func TestPostRedemption_Validation(t *testing.T) {
 		body    postRedemptionRequest
 	}{
 		{"missing X-User-Id", map[string]string{"Idempotency-Key": "k1"}, postRedemptionRequest{AmountIDR: 2_000}},
-		{"missing Idempotency-Key", map[string]string{"X-User-Id": "grace"}, postRedemptionRequest{AmountIDR: 2_000}},
-		{"zero amount", map[string]string{"X-User-Id": "grace", "Idempotency-Key": "k2"}, postRedemptionRequest{AmountIDR: 0}},
-		{"below minimum", map[string]string{"X-User-Id": "grace", "Idempotency-Key": "k3"}, postRedemptionRequest{AmountIDR: 500}},
-		{"exceeds balance", map[string]string{"X-User-Id": "grace", "Idempotency-Key": "k4"}, postRedemptionRequest{AmountIDR: 999_999}},
+		{"missing Idempotency-Key", map[string]string{"X-User-Id": grace}, postRedemptionRequest{AmountIDR: 2_000}},
+		{"zero amount", map[string]string{"X-User-Id": grace, "Idempotency-Key": "k2"}, postRedemptionRequest{AmountIDR: 0}},
+		{"below minimum", map[string]string{"X-User-Id": grace, "Idempotency-Key": "k3"}, postRedemptionRequest{AmountIDR: 500}},
+		{"exceeds balance", map[string]string{"X-User-Id": grace, "Idempotency-Key": "k4"}, postRedemptionRequest{AmountIDR: 999_999}},
 	}
 
 	for _, tt := range tests {
@@ -412,11 +454,7 @@ func TestGetCampaign_EndedAfterBudgetExhausted(t *testing.T) {
 
 	// Exhaust the budget directly, same technique as the cashback package's
 	// own INV-13 test.
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = os.Getenv("DATABASE_URL")
-	}
-	db, err := pgxpool.New(context.Background(), dsn)
+	db, err := pgxpool.New(context.Background(), testDSN(t))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -433,5 +471,52 @@ func TestGetCampaign_EndedAfterBudgetExhausted(t *testing.T) {
 	}
 	if status["status"] != "ended" {
 		t.Errorf(`status = %q, want "ended"`, status["status"])
+	}
+}
+
+// TestPostPayment_UnknownUserRejected covers decisions.md "User identity":
+// a payment for a user_id that doesn't reference a real users row (users
+// are populated by a SQL script, not this API) is rejected, not silently
+// accepted.
+func TestPostPayment_UnknownUserRejected(t *testing.T) {
+	router := newTestRouter(t)
+
+	rec := doRequest(t, router, http.MethodPost, "/payments", nil, postPaymentRequest{
+		PaymentID: "pay-unknown-user",
+		UserID:    "00000000-0000-0000-0000-000000000000", // well-formed UUID, never created
+		AmountIDR: 100_000,
+		PaidAt:    time.Now().Format(time.RFC3339),
+	}, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestPostRedemption_UnknownUserRejected is the same, for redemptions.
+func TestPostRedemption_UnknownUserRejected(t *testing.T) {
+	router := newTestRouter(t)
+
+	rec := doRequest(t, router, http.MethodPost, "/cashback/redemptions",
+		map[string]string{"X-User-Id": "00000000-0000-0000-0000-000000000000", "Idempotency-Key": "k1"},
+		postRedemptionRequest{AmountIDR: 2_000}, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCORS_PreflightAllowed(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodOptions, "/cashback/balance", nil)
+	req.Header.Set("Origin", "http://localhost:8081")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want \"*\"", got)
 	}
 }

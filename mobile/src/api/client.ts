@@ -23,7 +23,16 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
     });
 
     if (!response.ok) {
-      throw new ApiError(`${path} responded with HTTP ${response.status}`);
+      let message = `${path} responded with HTTP ${response.status}`;
+      try {
+        const body = await response.json();
+        if (body && typeof body.error === "string" && body.error) {
+          message = body.error;
+        }
+      } catch {
+        // Not JSON (or empty body) - keep the generic message.
+      }
+      throw new ApiError(message);
     }
 
     return (await response.json()) as T;

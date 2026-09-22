@@ -143,6 +143,9 @@ func (d *Deps) handlePostRedemption(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, cashback.ErrIdempotencyKeyConflict):
 		writeError(w, http.StatusConflict, err.Error())
 		return
+	case errors.Is(err, cashback.ErrUserNotFound):
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "failed to process redemption")
 		return

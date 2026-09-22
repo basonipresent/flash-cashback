@@ -29,6 +29,9 @@ func Redeem(ctx context.Context, db *pgxpool.Pool, in RedemptionInput) (Redempti
 		INSERT INTO user_balance (user_id, balance_idr) VALUES ($1, 0)
 		ON CONFLICT (user_id) DO NOTHING
 	`, in.UserID); err != nil {
+		if isForeignKeyViolation(err) {
+			return RedemptionResult{}, ErrUserNotFound
+		}
 		return RedemptionResult{}, fmt.Errorf("cashback: init user_balance: %w", err)
 	}
 

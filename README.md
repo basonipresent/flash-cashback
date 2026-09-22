@@ -11,7 +11,9 @@ See [spec/requirements.md](spec/requirements.md) for the full brief.
 
 ## Spec
 
+- [spec/presentation.md](spec/presentation.md) — **start here**: overview, trade-offs, and the reasoning behind the current approach.
 - [spec/requirements.md](spec/requirements.md) — the brief and derived functional/non-functional requirements.
+- [spec/design.md](spec/design.md) — technical design: architecture, data model, concurrency approach, API surface.
 - [spec/decisions.md](spec/decisions.md) — resolutions to open questions in the brief, with reasoning.
 - [spec/invariants.md](spec/invariants.md) — correctness properties the system must hold under concurrency.
 - [spec/api.yaml](spec/api.yaml) — OpenAPI contract for the backend.
@@ -42,7 +44,7 @@ Run `make` (or `make help`) to list all targets with descriptions.
 
 ```
 flash-cashback/
-├── spec/           # requirements, decisions, invariants, API contract, risks
+├── spec/           # presentation, requirements, design, decisions, invariants, API contract, risks
 ├── backend/        # Go API (cmd/api, internal/config, internal/httpapi, migrations)
 ├── mobile/         # Expo (React Native, TypeScript) app
 ├── scripts/        # demo/load scripts (not yet implemented)
@@ -53,6 +55,7 @@ flash-cashback/
 
 ## Status
 
-Scaffold only. No cashback, budget, daily-cap, ledger or redemption logic
-has been implemented yet — the backend currently only exposes `/healthz`
-and `/readyz`, and the mobile app only checks backend connectivity.
+Backend implemented: cashback earning (daily cap + campaign budget,
+concurrency-safe), redemption, ledger, and all API endpoints — see
+[spec/presentation.md](spec/presentation.md) for what's built and verified.
+Mobile is still just the scaffold's connectivity check.

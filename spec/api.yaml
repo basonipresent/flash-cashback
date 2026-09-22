@@ -1,10 +1,11 @@
 openapi: 3.1.0
 info:
   title: Flash Cashback API
-  version: 0.1.0
+  version: 0.2.0
   description: >
-    Scaffold only. Cashback earning, redemption, and history endpoints will
-    be added once spec/decisions.md and spec/invariants.md are finalized.
+    See spec/design.md for architecture and spec/decisions.md for the
+    reasoning behind ambiguous points (minimum redemption amount, paid_at
+    bounds, tie-break reason code, etc).
 paths:
   /healthz:
     get:
@@ -22,6 +23,7 @@ paths:
                     type: string
                     example: ok
                 required: [status]
+
   /readyz:
     get:
       summary: Readiness check
@@ -39,7 +41,244 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReadyzResult"
+
+  /payments:
+    post:
+      summary: Ingest a payment-succeeded event (FR-01–09)
+      description: >
+        System-to-system call from whatever emits payment-succeeded events
+        (decisions.md "Payment ingestion transport") - user_id comes from
+        the body, not X-User-Id, and must reference a real user (POST
+        /users). Idempotent on payment_id (FR-08): a retry returns the
+        original result unchanged, including for a payment already fully
+        processed by a concurrent request.
+      operationId: postPayment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentRequest"
+      responses:
+        "200":
+          description: >
+            The payment was processed (or had already been - this is not
+            distinguishable from the response alone). awarded_amount may be
+            0; see reason_code for why.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentResult"
+        "400":
+          description: >
+            Malformed request, paid_at more than 5 minutes in the future
+            (decisions.md "paid_at bounds"), or user_id doesn't reference an
+            existing user (users are seeded via SQL - see
+            scripts/seed_users.sql - not created through this API).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /cashback/balance:
+    get:
+      summary: Get the caller's current redeemable balance (FR-10)
+      operationId: getCashbackBalance
+      parameters:
+        - $ref: "#/components/parameters/XUserId"
+      responses:
+        "200":
+          description: Current balance.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  balance:
+                    type: integer
+                    format: int64
+                    description: IDR.
+                required: [balance]
+        "400":
+          $ref: "#/components/responses/MissingUserId"
+
+  /cashback/daily:
+    get:
+      summary: Get the caller's cashback earned today and remaining daily allowance (FR-11)
+      operationId: getCashbackDaily
+      parameters:
+        - $ref: "#/components/parameters/XUserId"
+      responses:
+        "200":
+          description: Today's usage, for the current Asia/Jakarta calendar day.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  earned_today:
+                    type: integer
+                    format: int64
+                    description: IDR.
+                  remaining_today:
+                    type: integer
+                    format: int64
+                    description: IDR. 50,000 minus earned_today, floored at 0.
+                required: [earned_today, remaining_today]
+        "400":
+          $ref: "#/components/responses/MissingUserId"
+
+  /cashback/history:
+    get:
+      summary: Get the caller's cashback history, newest first (FR-12)
+      description: >
+        Every payment outcome, not just ones that moved money: entries that
+        moved money (AWARD with amount > 0, and REDEEM) are backed by the
+        ledger; zero-award outcomes (BELOW_MINIMUM, DAILY_CAP_REACHED,
+        CAMPAIGN_ENDED) never touch the ledger but still appear here as an
+        AWARD entry with amount 0, so reason_code is always present for the
+        full picture FR-12 asks for ("including the reason for each payment
+        outcome").
+      operationId: getCashbackHistory
+      parameters:
+        - $ref: "#/components/parameters/XUserId"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Merged AWARD/REDEEM history, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/HistoryEntry"
+        "400":
+          $ref: "#/components/responses/MissingUserId"
+
+  /cashback/redemptions:
+    post:
+      summary: Redeem cashback into the simulated wallet (FR-14–18)
+      operationId: postCashbackRedemption
+      parameters:
+        - $ref: "#/components/parameters/XUserId"
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+          description: >
+            A retried request with the same key applies at most once
+            (FR-16). Reusing a key with a *different* amount than the
+            original request is rejected with 409, not silently replayed
+            (decisions.md "Redemption idempotency-key conflict").
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: integer
+                  format: int64
+                  description: IDR. Must be >= 1,000 (decisions.md) and <= current balance.
+              required: [amount]
+      responses:
+        "200":
+          description: Redemption applied (or replayed from a matching prior request).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  redemption_id:
+                    type: string
+                  new_balance:
+                    type: integer
+                    format: int64
+                    description: IDR.
+                required: [redemption_id, new_balance]
+        "400":
+          description: >
+            Missing X-User-Id/Idempotency-Key, non-positive amount, amount
+            below the 1,000 IDR minimum, amount exceeds the current balance
+            (FR-15), or X-User-Id doesn't reference an existing user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >
+            Idempotency-Key was already used for a redemption of a
+            different amount (decisions.md "Redemption idempotency-key
+            conflict").
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /campaign:
+    get:
+      summary: Get whether the campaign is still active (FR-13)
+      description: >
+        Does not expose the remaining budget or any other number
+        (decisions.md "GET /campaign budget visibility").
+      operationId: getCampaign
+      responses:
+        "200":
+          description: Campaign status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [active, ended]
+                required: [status]
+
 components:
+  parameters:
+    XUserId:
+      name: X-User-Id
+      in: header
+      required: true
+      schema:
+        type: string
+      description: >
+        Identifies the calling user - a users.id (seeded via SQL, see
+        scripts/seed_users.sql). No real authentication in this MVP - the
+        caller is trusted to send the correct id (requirements.md §4).
+
+  responses:
+    MissingUserId:
+      description: X-User-Id header is required.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Unexpected server-side failure.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
   schemas:
     ReadyzResult:
       type: object
@@ -51,3 +290,83 @@ components:
           type: string
           description: "\"ok\" or the error returned by the ping."
       required: [postgres, redis]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    PaymentRequest:
+      type: object
+      properties:
+        payment_id:
+          type: string
+        user_id:
+          type: string
+          description: A users.id (seeded via SQL, see scripts/seed_users.sql) - not an arbitrary string.
+        amount:
+          type: integer
+          format: int64
+          description: IDR.
+        paid_at:
+          type: string
+          format: date-time
+          description: RFC3339.
+      required: [payment_id, user_id, amount, paid_at]
+
+    PaymentResult:
+      type: object
+      properties:
+        awarded_amount:
+          type: integer
+          format: int64
+          description: IDR. May be 0 - see reason_code.
+        reason_code:
+          $ref: "#/components/schemas/ReasonCode"
+        balance_after:
+          type: integer
+          format: int64
+          description: IDR. The user's balance after this payment (whether or not it awarded anything).
+      required: [awarded_amount, reason_code, balance_after]
+
+    ReasonCode:
+      type: string
+      description: Why awarded_amount is what it is (FR-09).
+      enum:
+        - AWARDED
+        - PARTIAL_DAILY_CAP
+        - PARTIAL_BUDGET
+        - BELOW_MINIMUM
+        - DAILY_CAP_REACHED
+        - CAMPAIGN_ENDED
+
+    HistoryEntry:
+      type: object
+      properties:
+        entry_type:
+          type: string
+          enum: [AWARD, REDEEM]
+        amount:
+          type: integer
+          format: int64
+          description: >
+            IDR. Positive for AWARD, negative for REDEEM, 0 for a zero-award
+            outcome (BELOW_MINIMUM, DAILY_CAP_REACHED, CAMPAIGN_ENDED).
+        ref_type:
+          type: string
+          enum: [PAYMENT, REDEMPTION]
+        ref_id:
+          type: string
+          description: The payment_id or redemption id this entry came from.
+        reason_code:
+          type: string
+          description: >
+            One of ReasonCode's values for every AWARD entry (including
+            zero-award ones). Empty string for REDEEM - a redemption has no
+            reason code.
+        created_at:
+          type: string
+          format: date-time
+      required: [entry_type, amount, ref_type, ref_id, reason_code, created_at]

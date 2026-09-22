@@ -4,3 +4,4 @@ DROP TABLE IF EXISTS ledger;
 DROP TABLE IF EXISTS user_daily_cashback;
 DROP TABLE IF EXISTS campaign_budget;
 DROP TABLE IF EXISTS payments;
+DROP TABLE IF EXISTS users;

@@ -57,6 +57,9 @@ func (d *Deps) handlePostPayment(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, cashback.ErrFuturePaymentTimestamp):
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	case errors.Is(err, cashback.ErrUserNotFound):
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "failed to process payment")
 		return
