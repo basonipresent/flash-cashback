@@ -15,6 +15,7 @@ import (
 
 	"github.com/basonipresent/flash-cashback/backend/internal/config"
 	"github.com/basonipresent/flash-cashback/backend/internal/httpapi"
+	"github.com/basonipresent/flash-cashback/backend/internal/migrate"
 )
 
 func main() {
@@ -30,6 +31,19 @@ func main() {
 	if err != nil {
 		slog.Error("config", "error", err)
 		os.Exit(1)
+	}
+
+	// `-migrate`: run migrations against the configured DATABASE_URL and
+	// exit, without starting the HTTP server. Mainly for `make migrate`
+	// (manual/CI re-runs) - migrations already run automatically below on
+	// every normal boot, so this isn't required for `make up` to work.
+	if len(os.Args) > 1 && os.Args[1] == "-migrate" {
+		if err := migrate.Up(cfg.DatabaseURL); err != nil {
+			slog.Error("migrate", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("migrate: up to date")
+		os.Exit(0)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -48,6 +62,14 @@ func main() {
 		slog.Error("postgres: unreachable", "error", err)
 		os.Exit(1)
 	}
+
+	// Safe under concurrent replicas: golang-migrate holds a Postgres
+	// advisory lock for the duration of the run.
+	if err := migrate.Up(cfg.DatabaseURL); err != nil {
+		slog.Error("migrate", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("migrate: up to date")
 
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {

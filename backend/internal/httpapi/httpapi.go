@@ -27,6 +27,15 @@ func NewRouter(db *pgxpool.Pool, rdb *redis.Client) http.Handler {
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /readyz", deps.handleReadyz)
 
+	mux.HandleFunc("POST /payments", deps.handlePostPayment)
+
+	mux.HandleFunc("GET /cashback/balance", deps.handleGetBalance)
+	mux.HandleFunc("GET /cashback/daily", deps.handleGetDaily)
+	mux.HandleFunc("GET /cashback/history", deps.handleGetHistory)
+	mux.HandleFunc("POST /cashback/redemptions", deps.handlePostRedemption)
+
+	mux.HandleFunc("GET /campaign", deps.handleGetCampaign)
+
 	return withLogging(mux)
 }
 
@@ -69,6 +78,21 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// requireUserID extracts the caller's identity from X-User-Id (no auth in
+// MVP - see spec/design.md §4). Writes a 400 and returns "", false if absent.
+func requireUserID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	userID := r.Header.Get("X-User-Id")
+	if userID == "" {
+		writeError(w, http.StatusBadRequest, "X-User-Id header is required")
+		return "", false
+	}
+	return userID, true
 }
 
 func withLogging(next http.Handler) http.Handler {
