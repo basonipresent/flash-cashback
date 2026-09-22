@@ -11,7 +11,6 @@ See [spec/requirements.md](spec/requirements.md) for the full brief.
 
 ## Spec
 
-- [presentation.md](presentation.md) — **start here**: overview, trade-offs, and the reasoning behind the current approach.
 - [spec/requirements.md](spec/requirements.md) — the brief and derived functional/non-functional requirements.
 - [spec/design.md](spec/design.md) — technical design: architecture, data model, concurrency approach, API surface.
 - [spec/decisions.md](spec/decisions.md) — resolutions to open questions in the brief, with reasoning.

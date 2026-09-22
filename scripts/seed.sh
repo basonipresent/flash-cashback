@@ -49,20 +49,3 @@ echo "creating users (SQL)"
 docker compose exec -T postgres psql -U "$DB_USER" -d "$DB_NAME" < "$SCRIPT_DIR/seed_users.sql"
 echo "  alice -> $ALICE_ID"
 echo "  bob   -> $BOB_ID"
-
-echo "alice: qualifying payments, a below-minimum one, then a redemption"
-post_payment "seed-alice-1" "$ALICE_ID" 100000   # base 5,000 -> AWARDED
-post_payment "seed-alice-2" "$ALICE_ID" 50000    # base 2,500 -> AWARDED
-post_payment "seed-alice-3" "$ALICE_ID" 15000    # under 20,000 -> BELOW_MINIMUM
-redeem "$ALICE_ID" 2000 "seed-redeem-alice-1"
-
-echo "bob: four payments that walk through the daily cap"
-post_payment "seed-bob-1" "$BOB_ID" 400000   # base 20,000, cap has 50,000 left -> AWARDED
-post_payment "seed-bob-2" "$BOB_ID" 400000   # base 20,000, cap has 30,000 left -> AWARDED (cap now at 40,000 used)
-post_payment "seed-bob-3" "$BOB_ID" 400000   # base 20,000, only 10,000 left    -> PARTIAL_DAILY_CAP
-post_payment "seed-bob-4" "$BOB_ID" 400000   # cap fully used                  -> DAILY_CAP_REACHED
-
-echo
-echo "Done. Try these in the mobile app (enter the id directly) or curl:"
-echo "  alice: $ALICE_ID - balance, a below-minimum entry, and a redemption in history"
-echo "  bob:   $BOB_ID   - a full walk through AWARDED / PARTIAL_DAILY_CAP / DAILY_CAP_REACHED"

@@ -17,7 +17,7 @@ Any caller can set `X-User-Id` to any value and act as that user: read their bal
 Nothing stops a caller from submitting `POST /payments` events for payments that never happened, farming cashback. Related: with no auth (above), an attacker can also farm cashback under *someone else's* `user_id`.
 
 - **Status:** out of scope per the brief (requirements.md §4), but the risk exists regardless of scope.
-- **Mitigation, if addressed later:** payment events should come from a trusted internal source (the actual payments system), not be directly callable by end users — i.e., `POST /payments` is a system-to-system endpoint, not client-facing (see design.md §4). Network/service-level trust (private network, mTLS, service auth) substitutes for application-level fraud detection at MVP scale.
+- **Mitigation, if addressed later:** payment events should come from a trusted internal source (the actual payments system), not be directly callable by end users — i.e., `POST /payments` is a system-to-system endpoint, not client-facing (see design.md §4). Network/service-level trust (private network, mTLS, service auth) substitutes for application-level fraud detection at MVP scale. A per-user/IP rate limiter on `POST /payments` and `POST /cashback/redemptions` (Redis-backed token bucket — see design.md §5) would add defense-in-depth against farming, but doesn't replace real auth or trusted ingestion; not built for the same reason as the rest of Redis's planned use — no real traffic in a demo to validate it against.
 
 ## Untrusted `paid_at` manipulating the daily cap
 

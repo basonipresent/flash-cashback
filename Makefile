@@ -52,13 +52,31 @@ seed: ## Seed the database with demo data via the real API (needs `make up` runn
 test: ## Run backend unit tests (no DB required)
 	cd backend && go test ./...
 
-test-integration: ## Run backend concurrency/invariant tests against a real Postgres (needs `make up` running, or TEST_DATABASE_URL set)
-	# -p 1: packages share one live DB and TRUNCATE common tables, so they
-	# can't run in parallel without stomping on each other.
-	cd backend && go test -tags=integration -p 1 ./...
+# -p 1: packages share one DB and TRUNCATE common tables, so they can't run
+# in parallel without stomping on each other.
+#
+# -race needs cgo, which this Windows host has no C toolchain for - so this
+# runs inside a Linux container instead of natively, same as test-race
+# below. A previous run's container can also exit before Postgres finishes
+# closing its connections, which would otherwise make the DROP DATABASE
+# below flaky - terminate anything still attached first so the target is
+# repeatable.
+test-integration: ## Run backend concurrency/invariant tests with the race detector, against a disposable isolated database (needs `make up`; never touches seeded demo data)
+	@docker compose exec -T postgres psql -U postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'flash_cashback_race_test' AND pid <> pg_backend_pid();" >/dev/null
+	@docker compose exec -T postgres psql -U postgres -c "DROP DATABASE IF EXISTS flash_cashback_race_test;" >/dev/null
+	@docker compose exec -T postgres psql -U postgres -c "CREATE DATABASE flash_cashback_race_test;" >/dev/null
+	@docker run --rm --network flash-cashback_default \
+		-v $(CURDIR)/backend:/app -v flash-cashback-gomod-cache:/root/go/pkg/mod -w //app \
+		-e TEST_DATABASE_URL=postgres://postgres:postgres@postgres:5432/flash_cashback_race_test?sslmode=disable \
+		golang:1.26 go test -race -tags=integration -p 1 -v ./... 2>&1 | grep -v '^go: downloading'; \
+	exit "$${PIPESTATUS[0]}"
 
-test-race: ## Run backend unit tests with the race detector
-	cd backend && go test -race ./...
+test-race: ## Run backend unit tests with the race detector (via a Linux container - native Windows has no C toolchain, and -race needs cgo)
+	docker run --rm -v $(CURDIR)/backend:/app -v flash-cashback-gomod-cache:/root/go/pkg/mod -w /app golang:1.26 go test -race ./...
+	docker run --rm --network flash-cashback_default \
+		-v $(CURDIR)/backend:/app -v flash-cashback-gomod-cache:/root/go/pkg/mod -w //app \
+		-e TEST_DATABASE_URL=postgres://postgres:postgres@postgres:5432/flash_cashback_race_test?sslmode=disable \
+		golang:1.26 go test -race -tags=integration -p 1 ./...
 
 lint: ## Run go vet, and golangci-lint if it's installed
 	cd backend && go vet ./...
@@ -80,5 +98,12 @@ mobile-start: ## Start a containerized web preview of the mobile app at http://l
 mobile-stop: ## Stop the mobile web preview container
 	docker rm -f flash-cashback-mobile-web >/dev/null 2>&1 || true
 
-demo: ## Run the end-to-end demo (TODO)
-	@echo "TODO: demo script not implemented yet."
+demo: ## Run payments -> redemptions -> reads against a running backend (needs `make up`; users must exist first, e.g. `make seed`)
+	@echo "== payments =="
+	@bash scripts/test_payments.sh
+	@echo
+	@echo "== redemptions =="
+	@bash scripts/test_redemptions.sh
+	@echo
+	@echo "== reads =="
+	@bash scripts/test_reads.sh

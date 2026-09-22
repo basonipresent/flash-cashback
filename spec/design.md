@@ -160,10 +160,10 @@ The API allows any origin (`Access-Control-Allow-Origin: *`, `internal/httpapi/h
 
 ## 5. Redis's role
 
-Per NFR-02, Redis is never authoritative for money — every check above happens against Postgres inside a transaction. `/readyz` already depends on Redis because it's part of the required stack; its actual job is deliberately **not yet decided** beyond that:
+Per NFR-02, Redis is never authoritative for money — every check above happens against Postgres inside a transaction. `/readyz` already depends on Redis because it's part of the required stack; its actual job is deliberately **not yet decided** beyond that, and deferred for the same reason in both cases: there's no real traffic in a demo to validate a cache or limiter against, and an idle dependency is safer than one with an unproven correctness story:
 
-- Most likely use: a short-TTL read-through cache for cheap, frequently-polled reads (`GET /campaign`, `GET /cashback/balance`) to keep DB load down — pure optimization, safe to skip for the MVP demo since traffic is trivial.
-- Possible future use: rate-limiting `POST /payments` as a defensive measure (ties to abuse/fraud risk — see [risks.md](./risks.md)).
+- Most likely use: a short-TTL read-through cache for cheap, frequently-polled reads (`GET /campaign`, `GET /cashback/balance`) to keep DB load down. TTL-only (no invalidation) would be the safer first cut — staleness stays bounded by the TTL and it can't drift indefinitely; invalidate-on-write (clearing the key inside the same transaction that updates the counters) would stay fresher but couples Redis into the write path, which this design has otherwise kept fully out of the correctness-critical path.
+- Possible future use: rate-limiting `POST /payments`/`POST /cashback/redemptions` per user or IP as a defensive measure (ties to abuse/fraud risk — see [risks.md](./risks.md)) — a token-bucket limiter is the standard fit for Redis.
 
 Nothing in the correctness story depends on Redis; it can be introduced or left unused without changing any invariant.
 

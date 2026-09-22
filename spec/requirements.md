@@ -1,6 +1,5 @@
 # Requirements — Flash Cashback
 
-Status: draft v0.1
 Related: [decisions.md](./decisions.md) · [invariants.md](./invariants.md) · [api.yaml](./api.yaml) · [risks.md](./risks.md)
 
 ---
