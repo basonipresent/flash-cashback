@@ -52,6 +52,13 @@ seed: ## Seed the database with demo data via the real API (needs `make up` runn
 test: ## Run backend unit tests (no DB required)
 	cd backend && go test ./...
 
+test-race: ## Run backend unit tests with the race detector (via a Linux container - native Windows has no C toolchain, and -race needs cgo)
+	docker run --rm -v $(CURDIR)/backend:/app -v flash-cashback-gomod-cache:/root/go/pkg/mod -w /app golang:1.26 go test -race ./...
+	docker run --rm --network flash-cashback_default \
+		-v $(CURDIR)/backend:/app -v flash-cashback-gomod-cache:/root/go/pkg/mod -w //app \
+		-e TEST_DATABASE_URL=postgres://postgres:postgres@postgres:5432/flash_cashback_race_test?sslmode=disable \
+		golang:1.26 go test -race -tags=integration -p 1 ./...
+
 # -p 1: packages share one DB and TRUNCATE common tables, so they can't run
 # in parallel without stomping on each other.
 #
@@ -70,13 +77,6 @@ test-integration: ## Run backend concurrency/invariant tests with the race detec
 		-e TEST_DATABASE_URL=postgres://postgres:postgres@postgres:5432/flash_cashback_race_test?sslmode=disable \
 		golang:1.26 go test -race -tags=integration -p 1 -v ./... 2>&1 | grep -v '^go: downloading'; \
 	exit "$${PIPESTATUS[0]}"
-
-test-race: ## Run backend unit tests with the race detector (via a Linux container - native Windows has no C toolchain, and -race needs cgo)
-	docker run --rm -v $(CURDIR)/backend:/app -v flash-cashback-gomod-cache:/root/go/pkg/mod -w /app golang:1.26 go test -race ./...
-	docker run --rm --network flash-cashback_default \
-		-v $(CURDIR)/backend:/app -v flash-cashback-gomod-cache:/root/go/pkg/mod -w //app \
-		-e TEST_DATABASE_URL=postgres://postgres:postgres@postgres:5432/flash_cashback_race_test?sslmode=disable \
-		golang:1.26 go test -race -tags=integration -p 1 ./...
 
 lint: ## Run go vet, and golangci-lint if it's installed
 	cd backend && go vet ./...
