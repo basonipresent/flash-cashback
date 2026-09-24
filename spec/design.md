@@ -156,6 +156,46 @@ All endpoints identifying a user use `X-User-Id`, consistent with the brief's "a
 
 The API allows any origin (`Access-Control-Allow-Origin: *`, `internal/httpapi/httpapi.go`'s `withCORS`) so the mobile app's web target (a different origin/port during local development) can call it directly from a browser. Doesn't widen the trust boundary - there's no auth or cookie-based session to protect, `X-User-Id` is already an untrusted, caller-supplied header regardless of origin.
 
+### Request flow per endpoint
+
+The two money-moving endpoints do the real work described in §3; the flows below are the HTTP-layer steps around that (parsing, validation, status-code mapping) plus the full flow for the four read endpoints, which §3 doesn't cover.
+
+**`POST /payments`**
+1. Decode the JSON body — `400` if malformed.
+2. Validate `payment_id` and `user_id` are non-empty, `amount > 0`, and `paid_at` parses as RFC3339.
+3. Reject `paid_at` more than 5 minutes in the future — `400` (`cashback.ErrFuturePaymentTimestamp`, decisions.md "`paid_at` bounds").
+4. Call `cashback.AwardPayment` — the full locked transaction, §3 steps 1–6.
+5. Map the result: `ErrUserNotFound` → `400`; any other error → `500`; otherwise `200` with `{ awarded_amount, reason_code, balance_after }`.
+
+**`GET /cashback/balance`**
+1. Read `X-User-Id` — `400` if absent (`requireUserID`, shared by every user-scoped endpoint below).
+2. `SELECT balance_idr FROM user_balance WHERE user_id = ...` — a single indexed read, no lock, since nothing is being mutated.
+3. `200` with `{ balance }` — `0` for a user who's never had a payment, not a `404`; "no cashback yet" isn't an error state.
+
+**`GET /cashback/daily`**
+1. Read `X-User-Id` — `400` if absent.
+2. Derive today's `cashback_date` from the *server's* current time in Asia/Jakarta — unlike `POST /payments`'s caller-supplied `paid_at`, a read of "today" is always server-authoritative, not client-suppliable.
+3. `SELECT awarded_total_idr FROM user_daily_cashback WHERE user_id = ... AND cashback_date = today`, defaulting to `0` if no row exists yet.
+4. `200` with `{ earned_today, remaining_today: 50,000 - earned_today }`.
+
+**`GET /cashback/history`**
+1. Read `X-User-Id` — `400` if absent.
+2. Read optional `?limit=`/`?offset=` query params (defaults `50`/`0`; invalid or non-positive values fall back to the default rather than erroring).
+3. Run the `UNION ALL` query from the API-surface table above (ledger entries + zero-award payments), newest-first.
+4. `200` with an array of `{ entry_type, amount, ref_type, ref_id, reason_code, created_at }`.
+
+**`GET /campaign`**
+1. No `X-User-Id` — this is global state, not per-user.
+2. `SELECT awarded_total_idr, total_budget_idr FROM campaign_budget WHERE id = 1` — a plain read, no lock; being briefly stale relative to an in-flight award is acceptable for a status flag, unlike the award computation itself in §3.
+3. `200` with `{ status: "ended" if awarded_total_idr >= total_budget_idr else "active" }`. The amounts themselves are never returned (decisions.md "`GET /campaign` budget visibility").
+
+**`POST /cashback/redemptions`**
+1. Read `X-User-Id` — `400` if absent.
+2. Read the `Idempotency-Key` header — `400` if absent.
+3. Decode the JSON body — `400` if malformed; validate `amount > 0` — `400` if not.
+4. Call `cashback.Redeem` — the full locked transaction, §3's redemption paragraph (lock `user_balance`, check balance and the 1,000 IDR minimum, claim-insert on `(user_id, idempotency_key)`, ledger + balance update).
+5. Map the result: `ErrBelowMinimumRedemption` → `400`; `ErrInsufficientBalance` → `400`; `ErrUserNotFound` → `400`; `ErrIdempotencyKeyConflict` → `409` (decisions.md "Redemption idempotency-key conflict"); any other error → `500`; otherwise `200` with `{ redemption_id, new_balance }`.
+
 ---
 
 ## 5. Redis's role
