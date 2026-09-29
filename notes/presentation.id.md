@@ -78,7 +78,7 @@ Dua angka konkret: 20 goroutine berjalan bersamaan, masing-masing mengirim pemba
 
 Tiga celah lain yang disebut di bagian Latar Belakang juga bukan sekadar keputusan tertulis — dipastikan dengan cara yang sama. `TestRedeem_BelowMinimumRejected` membuktikan batas 1.000 IDR benar-benar ditegakkan, bukan cuma didokumentasikan. Kasus exact-tie di `TestComputeAward` membuktikan tie-break reason code memang mengarah ke `PARTIAL_BUDGET`, bukan sekadar kebetulan hasil fallback kode. Jendela waktu kampanye adalah satu-satunya pengecualian, dan memang disengaja: tidak ada invariant untuk diuji karena memang tidak ada yang dihitung — keputusannya adalah tidak menambahkan logika tanggal sama sekali, jadi buktinya bersifat struktural (tidak ada kolom `start_at`/`end_at` yang bisa salah), bukan hasil sebuah test.
 
-Total sekitar 30 automated test: unit test murni untuk logika perhitungan award, dan integration test yang menguji konkurensi sungguhan, semuanya bersih di bawah `-race` — bisa direproduksi dengan `make test-integration`, yang menjalankannya terhadap database sekali-pakai supaya tidak pernah menyentuh data demo yang sudah di-seed.
+Total sekitar 30 automated test: unit test murni untuk logika perhitungan award, dan integration test yang menguji konkurensi sungguhan, semuanya bersih di bawah `-race` — bisa direproduksi dengan `make docker-test-race`, yang menjalankannya terhadap database sekali-pakai supaya tidak pernah menyentuh data demo yang sudah di-seed.
 
 ---
 

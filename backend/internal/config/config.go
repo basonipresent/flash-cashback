@@ -18,7 +18,7 @@ type Config struct {
 // are required; everything else has a sane local-dev default.
 func Load() (Config, error) {
 	cfg := Config{
-		HTTPPort:    getEnv("HTTP_PORT", "8080"),
+		HTTPPort:    getEnv("PORT", "8080"),
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		RedisURL:    os.Getenv("REDIS_URL"),
 		Timezone:    getEnv("APP_TIMEZONE", "Asia/Jakarta"),

@@ -19,7 +19,7 @@ ALICE_ID="11111111-1111-1111-1111-111111111111"
 BOB_ID="22222222-2222-2222-2222-222222222222"
 
 if ! curl -sf "$BASE_URL/healthz" >/dev/null; then
-    echo "Backend not reachable at $BASE_URL - is 'make up' running?" >&2
+    echo "Backend not reachable at $BASE_URL - is 'make docker-up' running?" >&2
     exit 1
 fi
 
@@ -46,6 +46,6 @@ redeem() {
 echo "Seeding demo data against $BASE_URL ..."
 
 echo "creating users (SQL)"
-docker compose exec -T postgres psql -U "$DB_USER" -d "$DB_NAME" < "$SCRIPT_DIR/seed_users.sql"
+docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" < "$SCRIPT_DIR/seed_users.sql"
 echo "  alice -> $ALICE_ID"
 echo "  bob   -> $BOB_ID"

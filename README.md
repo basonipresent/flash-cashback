@@ -28,9 +28,9 @@ See [spec/requirements.md](spec/requirements.md) for the full brief.
 
 ```sh
 cp .env.example .env
-make up       # builds and starts postgres, redis, backend
-make seed     # creates two demo users (alice, bob) with sample payment/redemption history
-make mobile   # installs mobile deps and starts the Expo dev server
+make docker-up  # builds and starts db, redis, app
+make seed       # creates two demo users (alice, bob) with sample payment/redemption history
+make mobile     # installs mobile deps and starts the Expo dev server
 ```
 
 Then set `mobile/.env` (see `mobile/.env.example`) to your laptop's LAN IP

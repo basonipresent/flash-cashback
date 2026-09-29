@@ -1,52 +1,92 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
-      POSTGRES_DB: ${DB_NAME:-flash_cashback}
-    ports:
-      - "${DB_PORT:-5432}:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-flash_cashback}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  backend:
+  app:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    environment:
-      HTTP_PORT: 8080
-      DATABASE_URL: postgres://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-flash_cashback}?sslmode=disable
-      REDIS_URL: redis://redis:6379/0
-      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Jakarta}
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        MAIN_PKG: ${MAIN_PKG:-./cmd/api}
     ports:
-      - "${BACKEND_PORT:-8080}:8080"
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://postgres:postgres@db:5432/flash_cashback?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
     depends_on:
-      postgres:
+      db:
+        condition: service_healthy
+      # Redis is only a cache: the app starts and serves without it.
+      redis:
+        condition: service_started
+
+  # Dev-convenience web preview of the mobile app (Expo). No hot-reload -
+  # rerun after code changes. Not started by `up`; used by
+  # `make mobile-start`/`make mobile-stop`.
+  mobile:
+    build:
+      context: ./mobile
+    profiles: ["mobile"]
+    ports:
+      - "8081:8081"
+      - "19000:19000"
+    environment:
+      EXPO_PUBLIC_API_URL: http://localhost:${APP_PORT:-8080}
+      CI: "1"
+    volumes:
+      - ./mobile:/app
+      - mobile_node_modules:/app/node_modules
+
+  # Fallback race-test runner: full Debian Go image with gcc, which -race needs.
+  # Not started by `up`; used by `make docker-test-race`. TEST_DATABASE_URL
+  # points at flash_cashback_test, not flash_cashback - testDB() TRUNCATEs
+  # everything it touches on every run, so pointing this at the live app
+  # database would wipe seeded demo data (or worse, permanently exhaust the
+  # campaign budget) instead of just testing against it. `make
+  # docker-test-race` creates flash_cashback_test fresh before every run.
+  test:
+    image: golang:1.26
+    profiles: ["test"]
+    working_dir: /src/backend
+    environment:
+      CGO_ENABLED: "1"
+      TEST_DATABASE_URL: postgres://postgres:postgres@db:5432/flash_cashback_test?sslmode=disable
+      TEST_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - .:/src
+      - gomod:/go/pkg/mod
+      - gocache:/root/.cache/go-build
+
+  # Data lives in the image's anonymous volume, so `make docker-reset`
+  # (--renew-anon-volumes) starts from an empty database.
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: flash_cashback
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      # Over TCP: the socket check passes while initdb's temporary server,
+      # which does not listen on TCP, is still running.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d flash_cashback"]
+      interval: 2s
+      retries: 15
+
+  redis:
+    image: redis:7
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 15
 
 volumes:
-  postgres_data:
-  redis_data:
+  gomod:
+  gocache:
+  mobile_node_modules:

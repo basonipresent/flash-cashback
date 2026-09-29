@@ -1,25 +1,15 @@
-# syntax=docker/dockerfile:1
-
 FROM golang:1.26-alpine AS build
 WORKDIR /src
+COPY backend/go.mod backend/go.sum* ./
+RUN go mod download
+COPY backend/ .
+# Package containing main. Set via MAIN_PKG in the Makefile / compose.yaml.
+ARG MAIN_PKG=./cmd/api
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/app ${MAIN_PKG}
 
-RUN apk add --no-cache git
-
-COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
-
-COPY . .
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
-
-FROM gcr.io/distroless/static-debian12:nonroot AS runtime
-WORKDIR /app
-COPY --from=build /out/api /app/api
-
-USER nonroot:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/app /app
+ENV PORT=8080
 EXPOSE 8080
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["/app/api", "-healthcheck"]
-ENTRYPOINT ["/app/api"]
+USER nonroot:nonroot
+ENTRYPOINT ["/app"]

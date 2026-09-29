@@ -22,60 +22,55 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help up down logs ps reset migrate seed test test-integration test-race lint mobile mobile-start mobile-stop demo
+.PHONY: help docker-up docker-down docker-logs docker-ps docker-reset docker-migrate seed test docker-test-race lint mobile mobile-start mobile-stop demo
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
-up: ## Build and start postgres, redis, and backend
+docker-up: ## Build and start db, redis, and app
 	docker compose up -d --build
 
-down: ## Stop all services
+docker-down: ## Stop all services
 	docker compose down
 
-logs: ## Follow backend logs
-	docker compose logs -f backend
+docker-logs: ## Follow app logs
+	docker compose logs -f app
 
-ps: ## Show service status
+docker-ps: ## Show service status
 	docker compose ps
 
-reset: ## Stop all services and DELETE volumes (this destroys all data)
-	@echo "WARNING: this deletes the Postgres and Redis data volumes."
-	docker compose down -v
+docker-reset: ## Recreate containers and reset their anonymous volumes (this destroys all data)
+	@echo "WARNING: this resets the Postgres and Redis data (anonymous volumes)."
+	docker compose up -d --build --force-recreate --renew-anon-volumes
 
-migrate: ## Manually (re-)run database migrations against the running backend container
-	docker compose exec backend /app/api -migrate
+docker-migrate: ## Manually (re-)run database migrations against the running app container
+	docker compose exec app /app -migrate
 
-seed: ## Seed the database with demo data via the real API (needs `make up` running)
+seed: ## Seed the database with demo data via the real API (needs `make docker-up` running)
 	bash scripts/seed.sh
 
 test: ## Run backend unit tests (no DB required)
 	cd backend && go test ./...
 
-test-race: ## Run backend unit tests with the race detector (via a Linux container - native Windows has no C toolchain, and -race needs cgo)
-	docker run --rm -v $(CURDIR)/backend:/app -v flash-cashback-gomod-cache:/root/go/pkg/mod -w /app golang:1.26 go test -race ./...
-	docker run --rm --network flash-cashback_default \
-		-v $(CURDIR)/backend:/app -v flash-cashback-gomod-cache:/root/go/pkg/mod -w //app \
-		-e TEST_DATABASE_URL=postgres://postgres:postgres@postgres:5432/flash_cashback_race_test?sslmode=disable \
-		golang:1.26 go test -race -tags=integration -p 1 ./...
-
 # -p 1: packages share one DB and TRUNCATE common tables, so they can't run
 # in parallel without stomping on each other.
 #
 # -race needs cgo, which this Windows host has no C toolchain for - so this
-# runs inside a Linux container instead of natively, same as test-race
-# below. A previous run's container can also exit before Postgres finishes
+# runs via the `test` compose service (full Debian Go image with gcc)
+# instead of natively. That service's TEST_DATABASE_URL points at
+# flash_cashback_test, not the live flash_cashback database - testDB()
+# TRUNCATEs everything it touches on every run, so this creates
+# flash_cashback_test fresh each time rather than risking the seeded demo
+# data. A previous run's container can also exit before Postgres finishes
 # closing its connections, which would otherwise make the DROP DATABASE
 # below flaky - terminate anything still attached first so the target is
-# repeatable.
-test-integration: ## Run backend concurrency/invariant tests with the race detector, against a disposable isolated database (needs `make up`; never touches seeded demo data)
-	@docker compose exec -T postgres psql -U postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'flash_cashback_race_test' AND pid <> pg_backend_pid();" >/dev/null
-	@docker compose exec -T postgres psql -U postgres -c "DROP DATABASE IF EXISTS flash_cashback_race_test;" >/dev/null
-	@docker compose exec -T postgres psql -U postgres -c "CREATE DATABASE flash_cashback_race_test;" >/dev/null
-	@docker run --rm --network flash-cashback_default \
-		-v $(CURDIR)/backend:/app -v flash-cashback-gomod-cache:/root/go/pkg/mod -w //app \
-		-e TEST_DATABASE_URL=postgres://postgres:postgres@postgres:5432/flash_cashback_race_test?sslmode=disable \
-		golang:1.26 go test -race -tags=integration -p 1 -v ./... 2>&1 | grep -v '^go: downloading'; \
+# repeatable. -tags=integration pulls in the concurrency tests on top of
+# the plain unit tests, so this one target covers both.
+docker-test-race: ## Run all backend tests with the race detector, against a disposable flash_cashback_test database (needs `make docker-up`; never touches the live app database or its demo data)
+	@docker compose exec -T db psql -U postgres -d flash_cashback -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'flash_cashback_test' AND pid <> pg_backend_pid();" >/dev/null
+	@docker compose exec -T db psql -U postgres -d flash_cashback -c "DROP DATABASE IF EXISTS flash_cashback_test;" >/dev/null
+	@docker compose exec -T db psql -U postgres -d flash_cashback -c "CREATE DATABASE flash_cashback_test;" >/dev/null
+	@docker compose run --rm test go test -race -tags=integration -p 1 -v ./... 2>&1 | grep -v '^go: downloading'; \
 	exit "$${PIPESTATUS[0]}"
 
 lint: ## Run go vet, and golangci-lint if it's installed
@@ -85,20 +80,14 @@ lint: ## Run go vet, and golangci-lint if it's installed
 mobile: ## Install deps and start the Expo dev server (native/Expo Go via LAN - the primary way to run mobile)
 	cd mobile && npm install && npx expo start
 
-mobile-start: ## Start a containerized web preview of the mobile app at http://localhost:8081 (dev-convenience only; needs `make up` for it to reach the backend; no hot-reload - rerun after code changes)
-	@docker rm -f flash-cashback-mobile-web >/dev/null 2>&1 || true
-	docker run --rm -d --name flash-cashback-mobile-web \
-		-p 8081:8081 -p 19000:19000 \
-		-v $(CURDIR)/mobile:/app -w //app \
-		-e EXPO_PUBLIC_API_URL=http://localhost:8080 \
-		-e CI=1 \
-		node:20-alpine sh -c "npx expo start --web --port 8081"
+mobile-start: ## Start a containerized web preview of the mobile app at http://localhost:8081 (dev-convenience only; needs `make docker-up` for it to reach the backend; no hot-reload - rerun after code changes)
+	docker compose --profile mobile up -d --build mobile
 	@echo "Starting - http://localhost:8081 (first load takes ~20s to bundle)"
 
 mobile-stop: ## Stop the mobile web preview container
-	docker rm -f flash-cashback-mobile-web >/dev/null 2>&1 || true
+	docker compose --profile mobile rm -fs mobile
 
-demo: ## Run payments -> redemptions -> reads against a running backend (needs `make up`; users must exist first, e.g. `make seed`)
+demo: ## Run payments -> redemptions -> reads against a running backend (needs `make docker-up`; users must exist first, e.g. `make seed`)
 	@echo "== payments =="
 	@bash scripts/test_payments.sh
 	@echo

@@ -21,12 +21,6 @@ import (
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
-	// The distroless runtime image has no shell/curl, so the container
-	// HEALTHCHECK runs this binary against itself instead.
-	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
-		healthcheck()
-	}
-
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("config", "error", err)
@@ -78,9 +72,12 @@ func main() {
 	}
 	rdb := redis.NewClient(redisOpts)
 	defer rdb.Close()
+	// Not fatal: Redis is never authoritative for money (NFR-02) and isn't
+	// on the award/redeem path at all today, only /readyz - so the app
+	// starts and serves without it. /readyz itself still reports Redis as
+	// down until it's reachable.
 	if err := rdb.Ping(connectCtx).Err(); err != nil {
-		slog.Error("redis: unreachable", "error", err)
-		os.Exit(1)
+		slog.Warn("redis: unreachable at startup, continuing without it", "error", err)
 	}
 
 	httpServer := &http.Server{
@@ -108,17 +105,4 @@ func main() {
 		slog.Error("shutdown", "error", err)
 		os.Exit(1)
 	}
-}
-
-func healthcheck() {
-	port := os.Getenv("HTTP_PORT")
-	if port == "" {
-		port = "8080"
-	}
-	client := http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("http://127.0.0.1:" + port + "/healthz")
-	if err != nil || resp.StatusCode != http.StatusOK {
-		os.Exit(1)
-	}
-	os.Exit(0)
 }

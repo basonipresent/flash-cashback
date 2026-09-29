@@ -78,7 +78,7 @@ Two concrete numbers: 20 simultaneous goroutines each submitting a payment worth
 
 The other three gaps named in Background aren't just written decisions either — they're asserted the same way. `TestRedeem_BelowMinimumRejected` proves the 1,000 IDR floor is actually enforced, not just documented. `TestComputeAward`'s exact-tie case proves the reason-code tie-break resolves to `PARTIAL_BUDGET`, not whatever the code happened to fall through to. The campaign time window is the one exception, and deliberately so: there's no invariant to test because nothing is computed — the decision was to add no date logic at all, so its proof is structural (no `start_at`/`end_at` columns exist to get wrong) rather than a test result.
 
-~30 automated tests total: pure-function unit tests for the award-computation logic, and integration tests that exercise real concurrency, all clean under `-race` — reproducible with `make test-integration`, which runs them against a disposable database so it never touches seeded demo data.
+~30 automated tests total: pure-function unit tests for the award-computation logic, and integration tests that exercise real concurrency, all clean under `-race` — reproducible with `make docker-test-race`, which runs them against a disposable database so it never touches seeded demo data.
 
 ---
 

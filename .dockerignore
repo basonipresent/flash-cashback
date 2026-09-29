@@ -1,0 +1,12 @@
+.git
+.claude
+.env
+notes
+spec
+scripts
+mobile
+backend/bin
+backend/dist
+*.exe
+*.test
+*.out
